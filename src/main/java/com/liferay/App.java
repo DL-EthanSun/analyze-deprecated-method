@@ -18,18 +18,20 @@ import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static org.eclipse.jdt.core.dom.ASTNode.METHOD_DECLARATION;
 
-/**
- * @author Ethan Sun
- * @param 'args[0]' The liferay-portal project path(Absolute).
- * @param 'args[1]' The location where the json file will locate at(Absolute).
- */
+
 public class App {
+
+    /**
+     * @author Ethan Sun
+     * @param args args[0]:The liferay-portal project path(Absolute), arg[1]:The location where the json file will locate at(Absolute).
+     */
     public static void main( String[] args ) {
 
-        List<Map<String, String>> simpleNameList = new LinkedList<>();
+        List<Map<String, Object>> simpleNameList = new LinkedList<>();
 
         ASTParser parser = ASTParser.newParser(AST.JLS14);
 
@@ -37,21 +39,21 @@ public class App {
 
         parser.setResolveBindings(true);
 
-        Collection<File> fileCollection = FileUtils.listFiles(new File(args[0]), FileFilterUtils.suffixFileFilter(".java"), FileFilterUtils.makeDirectoryOnly(new IOFileFilter() {
-            @Override
-            public boolean accept(File file) {
-                return true;
-            }
+        String[] filterDirs = new String[] {"modules", "portal-impl", "portal-kernel", "portal-web", "support-tomcat", "support-websphere", "tools", "util-bridges", "util-java", "util-slf4j", "util-taglib"};
+        
+        List<File> fileCollection = Stream.of(
+                filterDirs
+        ).map(
+                name -> new File(args[0], name)
+        ).flatMap(
+                dir -> {
+                    Collection<File> files = FileUtils.listFiles(dir, new String[] {"java"}, true);
 
-            @Override
-            public boolean accept(File file, String s) {
-                if (s.equals("classes") && file.getAbsolutePath().contains("/test/")) {
-                    return false;
+                    return files.stream();
                 }
-
-                return true;
-            }
-        }));
+        ).collect(
+                Collectors.toList()
+        );
 
         fileCollection.forEach(file -> {
             try {
@@ -79,7 +81,7 @@ public class App {
 
                                 String className = FilenameUtils.getBaseName(file.getName());
 
-                                Javadoc javadoc = (Javadoc) astNode.getStructuralProperty(MethodDeclaration.JAVADOC_PROPERTY);
+                                Javadoc javadocModel = (Javadoc) astNode.getStructuralProperty(MethodDeclaration.JAVADOC_PROPERTY);
 
                                 SimpleName methodName = (SimpleName) astNode.getStructuralProperty(MethodDeclaration.NAME_PROPERTY);
 
@@ -89,37 +91,42 @@ public class App {
 
                                 SingleVariableDeclaration[] parameterArrays = parametersCollection.toArray(new SingleVariableDeclaration[0]);
 
-                                List<String> parameters = new ArrayList<>();
-
-                                Arrays.stream(parameterArrays).forEachOrdered(e -> parameters.add(e.getType().toString()));
+                                String[] parameterTypeArrays = Arrays.stream(parameterArrays).map(SingleVariableDeclaration::getType).map(ASTNode::toString).toArray(String[]::new);
 
                                 String deprecatedVersion = "";
 
-                                String javadocCompact = "";
+                                String javadoc = "";
 
-                                if (Objects.nonNull(javadoc)) {
-                                    javadocCompact = javadoc.toString().replaceAll("(/\\*+\\s\n)|((?<=\n)\\s\\*\\s)|(\n\\s\\*/\n)","");
+                                if (Objects.nonNull(javadocModel)) {
 
-                                    Matcher matcher = _pattern.matcher(javadocCompact);
+                                    List list = javadocModel.tags();
+
+                                    for (int i = 0; i < list.size(); i++) {
+                                        if(list.get(i).toString().startsWith("\n * @deprecated")) {
+                                            javadoc = list.get(i).toString().replace("\n * ", "");
+                                        };
+                                    }
+
+                                    Matcher matcher = _pattern.matcher(javadoc);
 
                                     if (matcher.find()) {
                                         deprecatedVersion = matcher.group(1);
                                     }
                                 }
 
-                                Map<String,String> linkedHashMap = new LinkedHashMap<>();
+                                Map<String,Object> linkedHashMap = new LinkedHashMap<>();
 
                                 linkedHashMap.put("className", className);
 
                                 linkedHashMap.put("deprecatedVersion", deprecatedVersion);
 
-                                linkedHashMap.put("javadoc", javadocCompact);
+                                linkedHashMap.put("javadoc", javadoc);
 
                                 linkedHashMap.put("methodName", methodName.getIdentifier());
 
                                 linkedHashMap.put("packageName", packageName);
 
-                                linkedHashMap.put("parameters", parameters.toString());
+                                linkedHashMap.put("parameters", parameterTypeArrays);
 
                                 simpleNameList.add(linkedHashMap);
                             }
@@ -133,22 +140,25 @@ public class App {
             }
         });
 
-        List<Map<String, String>> validValueLists = simpleNameList.stream().filter(e -> e.get("deprecatedVersion").equals("7.2")).collect(Collectors.toList());
-
-        String contents = new GsonBuilder().setPrettyPrinting().create().toJson(validValueLists);
-
         Path folder = Paths.get(args[1]);
 
-        if (Files.isDirectory(folder)) {
-            try {
-                Files.createFile(folder.resolve("deprecatedMethod72.json"));
+        String[][] options = new String[][] {{"7.2", "deprecatedMethod72.json"}, {"", "deprecatedMethodNoneVersion.json"}};
 
-                Files.write(folder.resolve("deprecatedMethod72.json"), contents.getBytes(Charset.defaultCharset()));
-            } catch (IOException e) {
-                e.printStackTrace();
+        Arrays.stream(options).forEach(e -> {
+            List<Map<String, Object>> deprecatedMethodsVersionList = simpleNameList.stream().filter(v -> v.get("deprecatedVersion").equals(e[0])).collect(Collectors.toList());
+
+            String jsonData = new GsonBuilder().disableHtmlEscaping().setPrettyPrinting().create().toJson(deprecatedMethodsVersionList);
+
+            if (Files.isDirectory(folder)) {
+                try {
+                    Files.createFile(folder.resolve(e[1]));
+
+                    Files.write(folder.resolve(e[1]), jsonData.getBytes(StandardCharsets.UTF_8));
+                } catch (IOException ioException) {
+                    ioException.printStackTrace();
+                }
             }
-        }
-
+        });
     }
 
     public static final Pattern _pattern = Pattern.compile("(?<=\\()([67]\\.\\d)\\.x(?=\\))");
